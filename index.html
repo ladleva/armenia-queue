@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Очередь</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+	:root {
+		/* Цвета берутся из темы Telegram, в обычном браузере — запасные */
+		--bg: var(--tg-theme-bg-color, #ffffff);
+		--text: var(--tg-theme-text-color, #1c1c1e);
+		--hint: var(--tg-theme-hint-color, #8e8e93);
+		--accent: var(--tg-theme-button-color, #2a7fd4);
+		--accent-text: var(--tg-theme-button-text-color, #ffffff);
+		--card: var(--tg-theme-secondary-bg-color, #f2f2f7);
+	}
+	@media (prefers-color-scheme: dark) {
+		:root:not(.tg) {
+			--bg: #17212b; --text: #f5f5f5; --hint: #708499; --card: #232e3c; --accent: #5288c1;
+		}
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; background: var(--bg); color: var(--text);
+		font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	}
+	.app { max-width: 480px; margin: 0 auto; padding: 16px 16px 32px; }
+	header { display: flex; align-items: center; gap: 8px; min-height: 40px; margin-bottom: 8px; }
+	.back {
+		border: 0; background: none; color: var(--accent); font-size: 16px;
+		padding: 8px 8px 8px 0; cursor: pointer;
+	}
+	h1 { font-size: 20px; margin: 0; }
+	.crumbs { color: var(--hint); font-size: 14px; margin-bottom: 16px; min-height: 20px; }
+	.list { display: flex; flex-direction: column; gap: 8px; }
+	.item {
+		display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+		background: var(--card); color: var(--text); border: 0; border-radius: 12px;
+		padding: 14px 16px; font-size: 16px; cursor: pointer;
+	}
+	.item:active { opacity: .7; }
+	.item .icon { font-size: 22px; }
+	.item .sub { display: block; color: var(--hint); font-size: 13px; }
+	input {
+		width: 100%; font-size: 28px; text-align: center; letter-spacing: 2px;
+		padding: 14px; border-radius: 12px; border: 2px solid transparent;
+		background: var(--card); color: var(--text); outline: none;
+	}
+	input:focus { border-color: var(--accent); }
+	.hint { color: var(--hint); font-size: 14px; margin: 8px 0 16px; text-align: center; }
+	.btn {
+		width: 100%; border: 0; border-radius: 12px; padding: 14px; font-size: 16px; font-weight: 600;
+		background: var(--accent); color: var(--accent-text); cursor: pointer;
+	}
+	.btn:disabled { opacity: .4; }
+	.btn.ghost { background: var(--card); color: var(--accent); margin-top: 8px; }
+	.result { text-align: center; padding: 8px 0 16px; }
+	.big { font-size: 72px; font-weight: 700; line-height: 1; color: var(--accent); }
+	.label { color: var(--hint); margin-top: 4px; }
+	.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 20px 0; }
+	.stat { background: var(--card); border-radius: 12px; padding: 12px; text-align: center; }
+	.stat b { display: block; font-size: 20px; }
+	.stat span { color: var(--hint); font-size: 13px; }
+	.error { color: #e5484d; text-align: center; margin: 8px 0; min-height: 20px; }
+	.loading { text-align: center; color: var(--hint); padding: 40px 0; }
+	/* Внутри Telegram кнопку «Показать» заменяет MainButton */
+	.tg .btn.main { display: none; }
+</style>
+</head>
+<body>
+<div class="app">
+	<header>
+		<button class="back" id="back" hidden>‹ Назад</button>
+		<h1 id="title"></h1>
+	</header>
+	<div class="crumbs" id="crumbs"></div>
+	<div id="screen"></div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────
+// МОК API. Потом каждую функцию заменим на fetch к настоящей апишке,
+// формат ответов оставим тем же — экраны трогать не придётся.
+// ─────────────────────────────────────────────────────────────
+const MOCK = {
+	cities: [
+		{ id: "yerevan", name: "Ереван" },
+		{ id: "gyumri", name: "Гюмри" },
+		{ id: "vanadzor", name: "Ванадзор" }
+	],
+	departments: [
+		{ id: "clinic", name: "Поликлиника", icon: "🏥" },
+		{ id: "police", name: "Дорожная полиция (ГАИ)", icon: "🚓" },
+		{ id: "passport", name: "Паспортный стол", icon: "🛂" },
+		{ id: "cpsc", name: "Центр госуслуг", icon: "🏛" }
+	],
+	// офисы: город → отдел → адреса
+	offices: {
+		yerevan: {
+			clinic: [
+				{ id: "y-c-1", address: "ул. Абовяна, 34", served: 112, avgMin: 6 },
+				{ id: "y-c-2", address: "пр. Комитаса, 58", served: 47, avgMin: 8 },
+				{ id: "y-c-3", address: "ул. Бабаяна, 12", served: 203, avgMin: 5 }
+			],
+			police: [
+				{ id: "y-p-1", address: "ул. Аршакуняц, 2", served: 318, avgMin: 4 },
+				{ id: "y-p-2", address: "ул. Араби, 104", served: 89, avgMin: 7 }
+			],
+			passport: [
+				{ id: "y-pa-1", address: "ул. Мовсеса Хоренаци, 130", served: 64, avgMin: 10 }
+			],
+			cpsc: [
+				{ id: "y-s-1", address: "ул. Туманяна, 8", served: 150, avgMin: 5 },
+				{ id: "y-s-2", address: "пр. Тиграна Меца, 21", served: 77, avgMin: 6 }
+			]
+		},
+		gyumri: {
+			clinic: [{ id: "g-c-1", address: "ул. Абовяна, 252", served: 38, avgMin: 9 }],
+			police: [{ id: "g-p-1", address: "ул. Ширакаци, 100", served: 55, avgMin: 6 }],
+			passport: [{ id: "g-pa-1", address: "пл. Вардананц, 1", served: 21, avgMin: 12 }],
+			cpsc: [{ id: "g-s-1", address: "ул. Рижкова, 9", served: 42, avgMin: 7 }]
+		},
+		vanadzor: {
+			clinic: [{ id: "v-c-1", address: "ул. Тиграна Меца, 33", served: 29, avgMin: 8 }],
+			police: [{ id: "v-p-1", address: "ул. Батуми, 7", served: 61, avgMin: 5 }],
+			cpsc: [{ id: "v-s-1", address: "ул. Гарегина Нжде, 4", served: 18, avgMin: 6 }]
+		}
+	}
+};
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const api = {
+	async getCities() {
+		await delay(300);
+		return MOCK.cities;
+	},
+	async getDepartments(cityId) {
+		await delay(300);
+		const available = Object.keys(MOCK.offices[cityId] || {});
+		return MOCK.departments.filter((d) => available.includes(d.id));
+	},
+	async getOffices(cityId, depId) {
+		await delay(300);
+		return (MOCK.offices[cityId]?.[depId] || []).map(({ id, address }) => ({ id, address }));
+	},
+	// Аналог GET /offices/:id/queue?ticket=N
+	async getQueue(officeId, ticket) {
+		await delay(500);
+		const office = Object.values(MOCK.offices)
+			.flatMap((deps) => Object.values(deps).flat())
+			.find((o) => o.id === officeId);
+		if (!office) throw new Error("Офис не найден");
+		// чуть «оживляем» мок: обслуживаемый номер плавает при каждом запросе
+		const nowServing = office.served + Math.floor(Math.random() * 3);
+		// Выдано талонов примерно на 2 часа работы вперёд — больше в реальной очереди не бывает
+		const lastIssued = office.served + Math.round(120 / office.avgMin);
+		if (ticket > lastIssued) {
+			throw new Error(`Талон №${ticket} в этом отделении ещё не выдавали. Последний выданный — №${lastIssued}.`);
+		}
+		return {
+			nowServing,
+			yourTicket: ticket,
+			ahead: Math.max(0, ticket - nowServing - 1),
+			avgMinutes: office.avgMin,
+			passed: ticket <= nowServing
+		};
+	}
+};
+
+// ─────────────────────────────────────────────────────────────
+// Экраны
+// ─────────────────────────────────────────────────────────────
+const inTelegram = !!window.Telegram?.WebApp?.initData;
+// Вне Telegram SDK не трогаем — в обычном браузере его методы только ругаются в консоль
+const tg = inTelegram ? window.Telegram.WebApp : null;
+if (inTelegram) {
+	document.documentElement.classList.add("tg");
+	tg.ready();
+	tg.expand();
+}
+
+const $ = (id) => document.getElementById(id);
+const state = { city: null, dep: null, office: null, ticket: null };
+const history = [];
+
+function haptic() {
+	tg?.HapticFeedback?.selectionChanged();
+}
+
+function setHeader(title) {
+	$("title").textContent = title;
+	const parts = [state.city?.name, state.dep?.name, state.office?.address].filter(Boolean);
+	$("crumbs").textContent = parts.join(" · ");
+	const canBack = history.length > 1;
+	if (inTelegram) {
+		canBack ? tg.BackButton.show() : tg.BackButton.hide();
+	} else {
+		$("back").hidden = !canBack;
+	}
+	if (inTelegram) tg.MainButton.hide();
+}
+
+function loading() {
+	$("screen").innerHTML = '<div class="loading">Загружаем…</div>';
+}
+
+function renderList(items, onPick) {
+	const list = document.createElement("div");
+	list.className = "list";
+	for (const it of items) {
+		const b = document.createElement("button");
+		b.className = "item";
+		b.innerHTML = (it.icon ? `<span class="icon">${it.icon}</span>` : "") + `<span>${it.label}</span>`;
+		b.onclick = () => { haptic(); onPick(it); };
+		list.appendChild(b);
+	}
+	$("screen").replaceChildren(list);
+}
+
+function go(screen) {
+	history.push(screen);
+	screen();
+}
+
+async function cityScreen() {
+	state.city = state.dep = state.office = null;
+	setHeader("Выберите город");
+	loading();
+	const cities = await api.getCities();
+	renderList(cities.map((c) => ({ ...c, label: c.name, icon: "📍" })), (c) => {
+		state.city = c;
+		go(depScreen);
+	});
+}
+
+async function depScreen() {
+	state.dep = state.office = null;
+	setHeader("Выберите отдел");
+	loading();
+	const deps = await api.getDepartments(state.city.id);
+	renderList(deps.map((d) => ({ ...d, label: d.name })), (d) => {
+		state.dep = d;
+		go(officeScreen);
+	});
+}
+
+async function officeScreen() {
+	state.office = null;
+	setHeader("Выберите адрес");
+	loading();
+	const offices = await api.getOffices(state.city.id, state.dep.id);
+	renderList(offices.map((o) => ({ ...o, label: o.address, icon: "🏢" })), (o) => {
+		state.office = o;
+		go(ticketScreen);
+	});
+}
+
+function ticketScreen() {
+	setHeader("Номер талона");
+	$("screen").innerHTML = `
+		<input id="ticket" inputmode="numeric" pattern="[0-9]*" placeholder="000" maxlength="4" autocomplete="off">
+		<div class="hint">Номер напечатан на талоне</div>
+		<div class="error" id="err"></div>
+		<button class="btn main" id="show" disabled>Показать очередь</button>`;
+	const input = $("ticket");
+	const submit = () => {
+		const n = parseInt(input.value, 10);
+		if (!n) { $("err").textContent = "Введите номер талона"; return; }
+		state.ticket = n;
+		go(resultScreen);
+	};
+	input.oninput = () => {
+		input.value = input.value.replace(/\D/g, "");
+		$("err").textContent = "";
+		$("show").disabled = !input.value;
+		if (inTelegram) input.value ? tg.MainButton.show() : tg.MainButton.hide();
+	};
+	input.onkeydown = (e) => { if (e.key === "Enter") submit(); };
+	$("show").onclick = submit;
+	if (inTelegram) {
+		tg.MainButton.setText("Показать очередь");
+		tg.MainButton.offClick(onMainButton);
+		onMainButton = submit;
+		tg.MainButton.onClick(onMainButton);
+	}
+	if (state.ticket) { input.value = state.ticket; input.oninput(); }
+	input.focus();
+}
+let onMainButton = () => {};
+
+function plural(n, one, few, many) {
+	const m10 = n % 10, m100 = n % 100;
+	if (m10 === 1 && m100 !== 11) return one;
+	if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+	return many;
+}
+
+async function resultScreen() {
+	setHeader(`Талон №${state.ticket}`);
+	loading();
+	let q;
+	try {
+		q = await api.getQueue(state.office.id, state.ticket);
+	} catch (e) {
+		$("screen").innerHTML = `
+			<div class="result"><div class="big">?</div></div>
+			<div class="error">${e.message}</div>
+			<button class="btn" id="fix">Ввести другой номер</button>`;
+		tg?.HapticFeedback?.notificationOccurred("error");
+		$("fix").onclick = back;
+		return;
+	}
+	const wait = q.ahead * q.avgMinutes;
+	const waitText = wait < 60 ? `~${wait} мин` : `~${Math.floor(wait / 60)} ч ${wait % 60} мин`;
+
+	const head = q.passed
+		? `<div class="big">✓</div><div class="label">Ваш номер уже вызывали</div>`
+		: q.ahead === 0
+			? `<div class="big">0</div><div class="label">Вы следующий!</div>`
+			: `<div class="big">${q.ahead}</div><div class="label">${plural(q.ahead, "человек", "человека", "человек")} перед вами</div>`;
+
+	$("screen").innerHTML = `
+		<div class="result">${head}</div>
+		<div class="stats">
+			<div class="stat"><b>№${q.nowServing}</b><span>сейчас обслуживают</span></div>
+			<div class="stat"><b>${q.passed ? "—" : waitText}</b><span>примерное ожидание</span></div>
+		</div>
+		<button class="btn" id="refresh">Обновить</button>
+		<button class="btn ghost" id="again">Другой талон</button>`;
+	tg?.HapticFeedback?.notificationOccurred(q.ahead <= 3 ? "warning" : "success");
+	$("refresh").onclick = () => { haptic(); resultScreen(); };
+	$("again").onclick = () => { history.length = 0; state.ticket = null; go(cityScreen); };
+}
+
+function back() {
+	if (history.length <= 1) return;
+	history.pop();
+	history[history.length - 1]();
+}
+$("back").onclick = back;
+tg?.BackButton.onClick(back);
+
+go(cityScreen);
+</script>
+</body>
+</html>
